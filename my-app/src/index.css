@@ -1,6 +1,6 @@
 :root {
   font-family: system-ui, sans-serif;
-  color: #111;
+  color: #18181b;
   background: #fff;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -8,6 +8,8 @@
 }
 
 body {
+  min-width: 320px;
+  min-height: 100vh;
   margin: 0;
 }
 
@@ -15,8 +17,10 @@ body {
   min-height: 100vh;
 }
 
-h1 {
-  margin: 0;
-  font-size: 2rem;
-  font-weight: 600;
+* {
+  box-sizing: border-box;
+}
+
+button {
+  font: inherit;
 }
