@@ -200,6 +200,8 @@ function PhotoGallery() {
   const [pageError, setPageError] = useState('')
   const loadMoreRef = useRef(null)
   const photoGridRef = useRef(null)
+  const imagesRef = useRef([])
+  const lastLoadedIdRef = useRef(null)
   const [selectedFiles, setSelectedFiles] = useState([])
   const [previews, setPreviews] = useState([])
   const [error, setError] = useState('')
@@ -211,14 +213,26 @@ function PhotoGallery() {
   const [canShareFiles, setCanShareFiles] = useState(false)
   const [preparedShare, setPreparedShare] = useState(null)
 
+  const addLivePhoto = useCallback((photo) => {
+    if (!photo?.id || imagesRef.current.some((image) => image.id === photo.id)) return
+    const nextImages = [...imagesRef.current, photo]
+    imagesRef.current = nextImages
+    setImages(nextImages)
+    setTotalImages((count) => Math.max(count + 1, nextImages.length))
+  }, [])
+
   async function loadImages() {
     try {
       const response = await fetch('/api/images?offset=0&limit=24')
       if (!response.ok) throw new Error('Could not load photos.')
       const page = await response.json()
-      setImages(page.items)
+      const pageIds = new Set(page.items.map((image) => image.id))
+      const mergedImages = [...page.items, ...imagesRef.current.filter((image) => !pageIds.has(image.id))]
+      imagesRef.current = mergedImages
+      setImages(mergedImages)
+      lastLoadedIdRef.current = page.items.at(-1)?.id || null
       setPreparedShare(null)
-      setTotalImages(page.total)
+      setTotalImages((current) => Math.max(current, page.total, mergedImages.length))
       setHasMoreImages(page.hasMore)
       setPageError('')
       setError('')
@@ -228,6 +242,38 @@ function PhotoGallery() {
   }
 
   useEffect(() => { loadImages() }, [])
+
+  useEffect(() => {
+    let disposed = false
+    let reconnectTimer
+    let socket
+
+    function connect() {
+      if (disposed) return
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      socket = new WebSocket(`${protocol}//${window.location.host}/ws/images`)
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data)
+          if (message.type === 'photo-added') addLivePhoto(message.photo)
+        } catch {
+          // Ignore malformed or unrelated messages and keep the live connection open.
+        }
+      }
+      socket.onclose = () => {
+        if (disposed) return
+        reconnectTimer = window.setTimeout(connect, 1500)
+      }
+      socket.onerror = () => socket.close()
+    }
+
+    connect()
+    return () => {
+      disposed = true
+      window.clearTimeout(reconnectTimer)
+      socket?.close()
+    }
+  }, [addLivePhoto])
 
   useEffect(() => {
     const isMobileDevice = navigator.userAgentData?.mobile ||
@@ -246,18 +292,27 @@ function PhotoGallery() {
     setLoadingMore(true)
     setPageError('')
     try {
-      const response = await fetch(`/api/images?offset=${images.length}&limit=24`)
+      const cursor = lastLoadedIdRef.current
+      const query = cursor
+        ? `after=${encodeURIComponent(cursor)}&limit=24`
+        : `offset=0&limit=24`
+      const response = await fetch(`/api/images?${query}`)
       if (!response.ok) throw new Error('Could not load more photos.')
       const page = await response.json()
-      setImages((currentImages) => [...currentImages, ...page.items])
-      setTotalImages(page.total)
+      if (page.items.length) lastLoadedIdRef.current = page.items.at(-1).id
+      const currentIds = new Set(imagesRef.current.map((image) => image.id))
+      const newItems = page.items.filter((image) => !currentIds.has(image.id))
+      const nextImages = [...imagesRef.current, ...newItems]
+      imagesRef.current = nextImages
+      setImages(nextImages)
+      setTotalImages((current) => Math.max(current, page.total, nextImages.length))
       setHasMoreImages(page.hasMore)
     } catch {
       setPageError('Could not load more photos.')
     } finally {
       setLoadingMore(false)
     }
-  }, [hasMoreImages, images.length, loadingMore])
+  }, [hasMoreImages, loadingMore])
 
   useEffect(() => {
     const target = loadMoreRef.current
@@ -354,7 +409,7 @@ function PhotoGallery() {
       }
       setSelectedFiles([])
       setUploadDialogOpen(false)
-      await loadImages()
+      if (Array.isArray(result)) result.forEach(addLivePhoto)
     } catch (uploadError) {
       setError(uploadError.message)
     } finally {
@@ -492,7 +547,6 @@ function PhotoGallery() {
           <div className="gallery-heading">
             <div><p className="eyebrow">THE COLLECTION</p><h2>Your scrapbook</h2></div>
             <div className="gallery-actions">
-              <button type="button" className="refresh-button" onClick={loadImages} aria-label="Refresh photos">&#8635; <span>Refresh</span></button>
               <button type="button" className="download-button" onClick={() => downloadPhotos('all')} disabled={downloading}>
                 {downloading ? 'Preparing photos...' : preparedShare?.scope === 'all' ? 'Save all to Photos' : 'Download all'}
               </button>

@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       '/api': 'http://localhost:5080',
       '/images': 'http://localhost:5080',
+      '/ws': { target: 'ws://localhost:5080', ws: true },
     },
   },
 })

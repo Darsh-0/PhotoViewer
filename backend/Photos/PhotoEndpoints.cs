@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Net.WebSockets;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Processing;
 
@@ -12,6 +13,7 @@ public static class PhotoEndpoints
     public static IEndpointRouteBuilder MapPhotoEndpoints(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapGet("/api/images", ListImages);
+        endpoints.MapGet("/ws/images", HandlePhotoUpdates);
         endpoints.MapGet("/api/images/download", DownloadAllImages);
         endpoints.MapPost("/api/images/download", DownloadSelectedImages);
         endpoints.MapPost("/api/images", UploadImages).DisableAntiforgery();
@@ -25,22 +27,62 @@ public static class PhotoEndpoints
     private const int DefaultPageSize = 24;
     private const int MaxPageSize = 48;
 
+    private static async Task<IResult> HandlePhotoUpdates(HttpContext context, PhotoUpdateHub updates)
+    {
+        if (!context.WebSockets.IsWebSocketRequest)
+            return Results.BadRequest(new { error = "A WebSocket connection is required." });
+
+        using var socket = await context.WebSockets.AcceptWebSocketAsync();
+        updates.Add(socket);
+        var buffer = new byte[1024];
+        try
+        {
+            while (socket.State == WebSocketState.Open && !context.RequestAborted.IsCancellationRequested)
+            {
+                var received = await socket.ReceiveAsync(buffer, context.RequestAborted);
+                if (received.MessageType == WebSocketMessageType.Close) break;
+            }
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            // The browser disconnected or the server is shutting down.
+        }
+        catch (WebSocketException)
+        {
+            // The browser disconnected without a close frame.
+        }
+        finally
+        {
+            updates.Remove(socket);
+        }
+
+        if (socket.State == WebSocketState.CloseReceived)
+            await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        return Results.Empty;
+    }
+
     private static async Task<IResult> ListImages(
         int? offset,
         int? limit,
+        string? after,
         IPhotoStore photos,
         CancellationToken cancellationToken)
     {
         var ids = await photos.ListAsync(cancellationToken);
-        var start = Math.Clamp(offset ?? 0, 0, ids.Count);
         var pageSize = Math.Clamp(limit ?? DefaultPageSize, 1, MaxPageSize);
-        var items = ids.Skip(start).Take(pageSize)
+        var start = after is null ? Math.Clamp(offset ?? 0, 0, ids.Count) : 0;
+        var candidates = after is null
+            ? ids.Skip(start)
+            : ids.Where(id => string.Compare(id, after, StringComparison.OrdinalIgnoreCase) > 0);
+        var pageItems = candidates.Take(pageSize + 1).ToArray();
+        var items = pageItems.Take(pageSize)
             .Select(id => new PhotoResponse(
                 id,
                 $"/images/{Uri.EscapeDataString(id)}",
                 $"/images/{Uri.EscapeDataString(id)}/thumbnail",
                 $"/images/{Uri.EscapeDataString(id)}/download"));
-        return Results.Ok(new ImagePage(items, ids.Count, start + pageSize < ids.Count));
+        var hasMore = pageItems.Length > pageSize;
+        return Results.Ok(new ImagePage(items, ids.Count, hasMore));
     }
 
     private static async Task<IResult> DownloadAllImages(IPhotoStore photos, CancellationToken cancellationToken)
@@ -93,6 +135,7 @@ public static class PhotoEndpoints
     private static async Task<IResult> UploadImages(
         HttpRequest request,
         IPhotoStore photos,
+        PhotoUpdateHub updates,
         CancellationToken cancellationToken)
     {
         var form = await request.ReadFormAsync(cancellationToken);
@@ -116,11 +159,13 @@ public static class PhotoEndpoints
         {
             await using var input = image.OpenReadStream();
             var id = await photos.SaveAsync(input, extension, cancellationToken);
-            uploadedPhotos.Add(new PhotoResponse(
+            var photo = new PhotoResponse(
                 id,
                 $"/images/{Uri.EscapeDataString(id)}",
                 $"/images/{Uri.EscapeDataString(id)}/thumbnail",
-                $"/images/{Uri.EscapeDataString(id)}/download"));
+                $"/images/{Uri.EscapeDataString(id)}/download");
+            uploadedPhotos.Add(photo);
+            await updates.BroadcastPhotoAddedAsync(photo, cancellationToken);
         }
 
         return Results.Created("/api/images", uploadedPhotos);

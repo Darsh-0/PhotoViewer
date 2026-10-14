@@ -1,6 +1,6 @@
 # PictureSite
 
-PictureSite is a photo gallery with a React frontend and an ASP.NET Core API. It supports multi-photo uploads, lazy gallery loading, full-size image viewing, PNG downloads, and an admin page for deleting photos.
+PictureSite is a photo gallery with a React frontend and an ASP.NET Core API. It supports multi-photo uploads, live photo updates over WebSockets, lazy gallery loading, full-size image viewing, PNG downloads, and an admin page for deleting photos.
 
 ## Requirements
 
@@ -24,6 +24,23 @@ npm run dev
 ```
 
 Open the local URL printed by Vite. The frontend development server proxies `/api` and `/images` requests to the API.
+
+Run only one API instance at a time. If `dotnet run` reports that address `http://127.0.0.1:5080` is already in use, the API is already running or another process owns that port. Check whether the API is responding at `http://localhost:5080/api/images?offset=0&limit=1`. To stop the instance, press `Ctrl+C` in the terminal where it was started.
+
+If that terminal is no longer available, find the process listening on port 5080 in PowerShell:
+
+```powershell
+$listener = Get-NetTCPConnection -LocalPort 5080 -State Listen
+$listener | Select-Object LocalAddress, LocalPort, OwningProcess
+Get-Process -Id <PID>
+```
+
+After confirming the process is the stale API instance, stop it and start the API again:
+
+```powershell
+Stop-Process -Id <PID>
+dotnet run --project backend/PictureSite.Api.csproj
+```
 
 ## Admin access
 
