@@ -1,13 +1,20 @@
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Webp;
+using SixLabors.ImageSharp.Processing;
+
 namespace PictureSite.Api.Photos;
 
 public sealed class LocalPhotoStore : IPhotoStore
 {
     private readonly string _directory;
+    private readonly string _thumbnailDirectory;
 
     public LocalPhotoStore(string directory)
     {
         _directory = directory;
+        _thumbnailDirectory = Path.Combine(directory, ".thumbnails");
         Directory.CreateDirectory(_directory);
+        Directory.CreateDirectory(_thumbnailDirectory);
     }
 
     public Task<IReadOnlyList<string>> ListAsync(CancellationToken cancellationToken = default)
@@ -43,11 +50,53 @@ public sealed class LocalPhotoStore : IPhotoStore
         return Task.FromResult<PhotoFile?>(result);
     }
 
+    public async Task<PhotoFile?> OpenThumbnailAsync(string id, CancellationToken cancellationToken = default)
+    {
+        var sourcePath = ResolvePath(id);
+        if (sourcePath is null || !File.Exists(sourcePath)) return null;
+
+        var thumbnailPath = Path.Combine(_thumbnailDirectory, $"{id}.webp");
+        if (!File.Exists(thumbnailPath))
+        {
+            var temporaryPath = Path.Combine(_thumbnailDirectory, $"{Guid.NewGuid():N}.tmp");
+            try
+            {
+                using var image = await Image.LoadAsync(sourcePath, cancellationToken);
+                for (var frame = image.Frames.Count - 1; frame > 0; frame--)
+                    image.Frames.RemoveFrame(frame);
+
+                image.Mutate(operation => operation
+                    .AutoOrient()
+                    .Resize(new ResizeOptions
+                    {
+                        Size = new Size(640, 640),
+                        Mode = ResizeMode.Max,
+                    }));
+
+                await image.SaveAsWebpAsync(temporaryPath, new WebpEncoder
+                {
+                    Quality = 76,
+                    SkipMetadata = true,
+                }, cancellationToken);
+                File.Move(temporaryPath, thumbnailPath, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            }
+        }
+
+        var content = new FileStream(thumbnailPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return new PhotoFile(content, "image/webp");
+    }
+
     public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken = default)
     {
         var path = ResolvePath(id);
         if (path is null || !File.Exists(path)) return Task.FromResult(false);
         File.Delete(path);
+        var thumbnailPath = Path.Combine(_thumbnailDirectory, $"{id}.webp");
+        if (File.Exists(thumbnailPath)) File.Delete(thumbnailPath);
         return Task.FromResult(true);
     }
 

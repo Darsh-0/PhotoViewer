@@ -5,6 +5,7 @@ public interface IPhotoStore
     Task<IReadOnlyList<string>> ListAsync(CancellationToken cancellationToken = default);
     Task<string> SaveAsync(Stream content, string extension, CancellationToken cancellationToken = default);
     Task<PhotoFile?> OpenAsync(string id, CancellationToken cancellationToken = default);
+    Task<PhotoFile?> OpenThumbnailAsync(string id, CancellationToken cancellationToken = default);
     Task<bool> DeleteAsync(string id, CancellationToken cancellationToken = default);
 }
 

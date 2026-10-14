@@ -1,0 +1,8 @@
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Uploaded photo storage
+/uploads/
+/backend/uploads/
